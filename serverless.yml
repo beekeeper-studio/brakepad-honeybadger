@@ -1,0 +1,44 @@
+service: honeybadger-brakepad
+
+frameworkVersion: '3'
+
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-offline
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-1'}
+  environment:
+    HONEYBADGER_API_KEY: ${env:HONEYBADGER_API_KEY, ''}
+    ENVIRONMENT_NAME: ${opt:stage, 'dev'}
+
+functions:
+  processCrash:
+    handler: dist/index.handler
+    events:
+      - http:
+          path: /minidump
+          method: post
+          cors: true
+
+package:
+  patterns:
+    - '!**'
+    - 'dist/**'
+    - '!**/*.test.js'
+    - '!.git/**'
+    - '!node_modules/**'
+    - '!scripts/**'
+
+custom:
+  serverless-offline:
+    httpPort: 3000
+    noPrependStageInUrl: true
+  dotenv:
+    path: ./.env
+    include:
+      - HONEYBADGER_API_KEY
+      - ENVIRONMENT_NAME
