@@ -67,9 +67,12 @@ app.post('/minidump', async (req, res) => {
   }
 });
 
-// Start the server
-app.listen(PORT, () => {
-  console.log(`Honeybadger-Brakepad server running on port ${PORT}`);
-});
+// Start the server only when invoked directly. When required (e.g. by tests)
+// the consumer is expected to call `app.listen` itself or use supertest.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Honeybadger-Brakepad server running on port ${PORT}`);
+  });
+}
 
 module.exports = app; // For testing purposes

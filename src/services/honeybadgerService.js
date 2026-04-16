@@ -5,19 +5,19 @@ const axios = require('axios');
 
 // Honeybadger API configuration
 const HONEYBADGER_API_URL = 'https://api.honeybadger.io/v1/notices';
-const HONEYBADGER_API_KEY = process.env.HONEYBADGER_API_KEY;
-const ENVIRONMENT_NAME = process.env.ENVIRONMENT_NAME || 'production';
 
 /**
  * Converts a Breakpad/Crashpad crash report to Honeybadger format
- * 
+ *
  * @param {Object} crashReport - The parsed crash report from Breakpad/Crashpad
  * @returns {Object} - Honeybadger-compatible error report
  */
 function transformToHoneybadgerFormat(crashReport) {
+  const environmentName = process.env.ENVIRONMENT_NAME || 'production';
+
   // Extract the crashing thread's stack trace
   const threadId = crashReport.crash.threadCrashed;
-  const stackTrace = crashReport.crash.stackTraces[threadId] || [];
+  const stackTrace = (threadId != null && crashReport.crash.stackTraces[threadId]) || [];
   
   // Convert the stack trace to Honeybadger's backtrace format
   const backtrace = stackTrace.map(frame => ({
@@ -60,7 +60,7 @@ function transformToHoneybadgerFormat(crashReport) {
     },
     server: {
       project_root: '',
-      environment_name: ENVIRONMENT_NAME,
+      environment_name: environmentName,
       hostname: '',
       time: new Date().toISOString(),
       platform: crashReport.crash.systemInfo.OS || 'unknown',
@@ -76,7 +76,8 @@ function transformToHoneybadgerFormat(crashReport) {
  * @returns {Promise<Object>} - Honeybadger API response
  */
 async function sendToHoneybadger(crashReport) {
-  if (!HONEYBADGER_API_KEY) {
+  const apiKey = process.env.HONEYBADGER_API_KEY;
+  if (!apiKey) {
     throw new Error('HONEYBADGER_API_KEY environment variable is not set');
   }
 
@@ -87,7 +88,7 @@ async function sendToHoneybadger(crashReport) {
     // Send the error report to Honeybadger
     const response = await axios.post(HONEYBADGER_API_URL, honeybadgerPayload, {
       headers: {
-        'X-API-Key': HONEYBADGER_API_KEY,
+        'X-API-Key': apiKey,
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       }
@@ -105,5 +106,6 @@ async function sendToHoneybadger(crashReport) {
 }
 
 module.exports = {
-  sendToHoneybadger
+  sendToHoneybadger,
+  transformToHoneybadgerFormat
 };

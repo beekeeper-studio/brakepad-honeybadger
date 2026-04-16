@@ -1,24 +1,30 @@
 /**
  * Service for processing minidump files from Breakpad/Crashpad
  */
-const minidump = require('minidump');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { promisify } = require('util');
+const minidump = require('minidump');
 
-// Promisify the minidump.walkStack function
+// minidump.walkStack(filePath, [symbolPaths,] callback) takes a file path,
+// not a buffer, so callers that have a Buffer must spill it to a temp file.
 const walkStackAsync = promisify(minidump.walkStack);
 
 /**
  * Parses a minidump file to extract crash information
- * 
+ *
  * @param {Buffer} minidumpBuffer - The raw minidump file content
  * @returns {Promise<Object>} - Extracted crash information
  */
 async function parseMinidump(minidumpBuffer) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'honeybadger-brakepad-'));
+  const tmpPath = path.join(tmpDir, 'crash.dmp');
+
   try {
-    // Process the minidump to get stack traces
-    const stackWalkResult = await walkStackAsync(minidumpBuffer);
-    
-    // Parse the text output from minidump-stackwalk
+    fs.writeFileSync(tmpPath, minidumpBuffer);
+
+    const stackWalkResult = await walkStackAsync(tmpPath, []);
     const stackInfo = parseStackWalkOutput(stackWalkResult);
 
     return {
@@ -32,13 +38,19 @@ async function parseMinidump(minidumpBuffer) {
   } catch (error) {
     console.error('Error parsing minidump:', error);
     throw new Error(`Failed to parse minidump: ${error.message}`);
+  } finally {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch (cleanupErr) {
+      console.warn('Failed to clean up minidump temp dir:', cleanupErr.message);
+    }
   }
 }
 
 /**
  * Parses the text output from minidump-stackwalk
- * 
- * @param {string} output - The output from minidump-stackwalk
+ *
+ * @param {string|Buffer} output - The output from minidump-stackwalk
  * @returns {Object} - Structured crash information
  */
 function parseStackWalkOutput(output) {
@@ -51,68 +63,62 @@ function parseStackWalkOutput(output) {
     systemInfo: {}
   };
 
-  // Split the output into lines
-  const lines = output.toString().split('\\n');
-  
-  // Basic parser for demonstration - in a real implementation,
-  // this would need to be more robust and handle all minidump-stackwalk output formats
-  let currentSection = null;
+  const lines = output.toString().split('\n');
+
   let currentThread = null;
-  let currentFrame = null;
 
   for (const line of lines) {
-    // Parse crash reason
-    const crashMatch = line.match(/Crash reason: (.*)/);
+    // Crash reason
+    const crashMatch = line.match(/Crash reason:\s*(.*)/);
     if (crashMatch) {
-      result.crashReason = crashMatch[1];
+      result.crashReason = crashMatch[1].trim();
       continue;
     }
 
-    // Parse crash address
-    const addressMatch = line.match(/Crash address: (0x[0-9a-fA-F]+)/);
+    // Crash address
+    const addressMatch = line.match(/Crash address:\s*(0x[0-9a-fA-F]+)/);
     if (addressMatch) {
       result.crashAddress = addressMatch[1];
       continue;
     }
 
-    // Parse crashing thread
-    const threadMatch = line.match(/Thread ([0-9]+) \\(crashed\\)/);
+    // Crashing thread header (e.g. "Thread 0 (crashed)")
+    const threadMatch = line.match(/Thread\s+([0-9]+)\s+\(crashed\)/);
     if (threadMatch) {
       result.threadCrashed = parseInt(threadMatch[1], 10);
       currentThread = result.threadCrashed;
       continue;
     }
 
-    // Parse stack frames
-    const frameMatch = line.match(/([0-9]+) (0x[0-9a-fA-F]+) (.*)/);
+    // Stack frames - "0 0xADDR functionName" optionally followed by " [file:line]"
+    const frameMatch = line.match(/^\s*([0-9]+)\s+(0x[0-9a-fA-F]+)\s+(.*)$/);
     if (frameMatch && currentThread !== null) {
-      currentFrame = {
+      const frame = {
         frameIndex: parseInt(frameMatch[1], 10),
         address: frameMatch[2],
-        function: frameMatch[3] || 'unknown',
+        function: (frameMatch[3] || 'unknown').trim(),
         file: null,
         line: null
       };
-      
-      // Parse file and line info if available
-      const fileLineMatch = frameMatch[3].match(/(.*) \\[(.*):(\\d+)\\]/);
+
+      const fileLineMatch = frame.function.match(/^(.*)\s+\[(.*):(\d+)\]\s*$/);
       if (fileLineMatch) {
-        currentFrame.function = fileLineMatch[1];
-        currentFrame.file = fileLineMatch[2];
-        currentFrame.line = parseInt(fileLineMatch[3], 10);
+        frame.function = fileLineMatch[1].trim();
+        frame.file = fileLineMatch[2];
+        frame.line = parseInt(fileLineMatch[3], 10);
       }
-      
+
       if (!result.stackTraces[currentThread]) {
         result.stackTraces[currentThread] = [];
       }
-      
-      result.stackTraces[currentThread].push(currentFrame);
+
+      result.stackTraces[currentThread].push(frame);
       continue;
     }
 
-    // Parse modules
+    // Modules - "Module <index> <name> <version> (<debugId>)"
     if (line.startsWith('Module')) {
-      const moduleMatch = line.match(/Module (\\w+) ([^ ]+) ([^ ]+) \\(([^)]+)\\)/);
+      const moduleMatch = line.match(/Module\s+(\S+)\s+(\S+)\s+(\S+)\s+\(([^)]+)\)/);
       if (moduleMatch) {
         result.modules.push({
           index: moduleMatch[1],
@@ -124,12 +130,12 @@ function parseStackWalkOutput(output) {
       continue;
     }
 
-    // Parse system info (simple approach)
+    // Generic key/value system info
     if (line.includes(':') && !line.startsWith(' ')) {
-      const parts = line.split(':').map(p => p.trim());
-      if (parts.length >= 2) {
-        const key = parts[0];
-        const value = parts.slice(1).join(':');
+      const idx = line.indexOf(':');
+      const key = line.slice(0, idx).trim();
+      const value = line.slice(idx + 1).trim();
+      if (key && value && !result.systemInfo[key]) {
         result.systemInfo[key] = value;
       }
     }
@@ -139,5 +145,6 @@ function parseStackWalkOutput(output) {
 }
 
 module.exports = {
-  parseMinidump
+  parseMinidump,
+  parseStackWalkOutput
 };

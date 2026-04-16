@@ -1,7 +1,7 @@
 /**
  * Tests for the honeybadgerService
  */
-const { sendToHoneybadger } = require('./honeybadgerService');
+const { sendToHoneybadger, transformToHoneybadgerFormat } = require('./honeybadgerService');
 const axios = require('axios');
 
 // Mock axios
@@ -138,6 +138,55 @@ describe('honeybadgerService', () => {
       await expect(sendToHoneybadger(sampleCrashReport)).rejects.toThrow(
         'Failed to send report to Honeybadger: Request failed'
       );
+    });
+  });
+
+  describe('transformToHoneybadgerFormat', () => {
+    it('maps stack frames to Honeybadger backtrace entries', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+
+      expect(payload.error.backtrace).toEqual([
+        { file: 'app.js', method: 'main', number: 42, column: 0 },
+        { file: 'app.js', method: 'start', number: 30, column: 0 }
+      ]);
+    });
+
+    it('uses guid as fingerprint', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.error.fingerprint).toBe('12345-67890');
+    });
+
+    it('forwards metadata into request.context', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.request.context).toEqual(
+        expect.objectContaining({
+          product: 'TestApp',
+          version: '1.0.0',
+          guid: '12345-67890',
+          custom_key: 'custom_value'
+        })
+      );
+    });
+
+    it('respects ENVIRONMENT_NAME at call time', () => {
+      process.env.ENVIRONMENT_NAME = 'staging';
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.server.environment_name).toBe('staging');
+    });
+
+    it('defaults to production when ENVIRONMENT_NAME is unset', () => {
+      delete process.env.ENVIRONMENT_NAME;
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.server.environment_name).toBe('production');
+    });
+
+    it('produces an empty backtrace when no thread crashed', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, threadCrashed: null }
+      };
+      const payload = transformToHoneybadgerFormat(report);
+      expect(payload.error.backtrace).toEqual([]);
     });
   });
 });

@@ -37,6 +37,18 @@ async function parseCrashReport(req) {
       };
       
       let busboyFinished = false;
+      let parsingTimeout = null;
+      const finalize = (err, value) => {
+        if (parsingTimeout) {
+          clearTimeout(parsingTimeout);
+          parsingTimeout = null;
+        }
+        if (err) {
+          reject(err);
+        } else {
+          resolve(value);
+        }
+      };
 
       busboy.on('field', (fieldname, value) => {
         console.log(`Field received: ${fieldname}`);
@@ -65,24 +77,24 @@ async function parseCrashReport(req) {
 
         file.on('error', (error) => {
           console.error(`Error processing file ${fieldname}:`, error);
-          reject(new Error(`File processing error: ${error.message}`));
+          finalize(new Error(`File processing error: ${error.message}`));
         });
       });
 
       busboy.on('finish', async () => {
         busboyFinished = true;
         console.log("Busboy finished parsing form data");
-        
+
         try {
           // Process the minidump file
           if (!formData.files.upload_file_minidump) {
-            return reject(new Error('Missing minidump file'));
+            return finalize(new Error('Missing minidump file'));
           }
 
           console.log("Processing minidump file");
           // Extract stack traces and other information from the minidump
           const minidumpData = await parseMinidump(formData.files.upload_file_minidump.content);
-          
+
           // Create the final crash report object
           const crashReport = {
             // Metadata from the form fields
@@ -97,16 +109,16 @@ async function parseCrashReport(req) {
           };
 
           console.log("Crash report processed successfully");
-          resolve(crashReport);
+          finalize(null, crashReport);
         } catch (error) {
           console.error("Error processing minidump:", error);
-          reject(error);
+          finalize(error);
         }
       });
 
       busboy.on('error', (error) => {
         console.error('Busboy error:', error);
-        reject(error);
+        finalize(error);
       });
 
       // Handle request stream data directly
@@ -123,20 +135,20 @@ async function parseCrashReport(req) {
         }
       } else {
         console.error("Request is not readable");
-        reject(new Error('Request is not a readable stream'));
+        return finalize(new Error('Request is not a readable stream'));
       }
-      
+
       // Set a timeout for the entire parsing operation
-      const parsingTimeout = setTimeout(() => {
+      parsingTimeout = setTimeout(() => {
         if (!busboyFinished) {
           console.error("Form parsing timed out");
-          reject(new Error('Form parsing timed out'));
+          finalize(new Error('Form parsing timed out'));
         }
       }, 30000); // 30 seconds timeout
-      
+
     } catch (error) {
       console.error("Error initializing busboy:", error);
-      reject(error);
+      finalize(error);
     }
   });
 }

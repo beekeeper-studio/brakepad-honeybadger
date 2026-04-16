@@ -1,6 +1,6 @@
 # Honeybadger-Brakepad Architecture
 
-This AWS Lambda function proxies crash reports from Electron apps using Crashpad/Breakpad to the Honeybadger error reporting service.
+This Express server proxies crash reports from Electron apps using Crashpad/Breakpad to the Honeybadger error reporting service.
 
 ## Protocols
 
@@ -47,45 +47,45 @@ This AWS Lambda function proxies crash reports from Electron apps using Crashpad
 
 ## Implementation Approach
 
-1. **Lambda Function Structure**
-   - Handler for API Gateway requests
-   - Middleware for parsing multipart/form-data
-   - Crash report processor
-   - Honeybadger API client
+1. **Express Server Structure** (`src/index.js`)
+   - `POST /minidump` route receives crash reports
+   - `GET /` health check
+   - `morgan` for HTTP request logging
+   - No body parsers on `/minidump` — busboy needs the raw multipart stream
 
 2. **Processing Pipeline**
-   - Receive and validate Breakpad/Crashpad crash report
-   - Parse minidump to extract stack traces and error information
-   - Transform data into Honeybadger-compatible format
+   - Receive and validate Breakpad/Crashpad crash report (`src/handlers/crashReportHandler.js`)
+   - Parse minidump to extract stack traces and error information (`src/services/minidumpService.js`)
+   - Transform data into Honeybadger-compatible format (`src/services/honeybadgerService.js`)
    - Submit to Honeybadger API
    - Return success/failure response
 
 3. **Minidump Processing**
-   - Use minidump-stackwalk or similar tool to extract useful information
-   - Parse stack traces to create Honeybadger-compatible backtrace
-   - Extract crash reason and convert to error class/message
+   - The `minidump` npm package wraps Breakpad's `minidump_stackwalk` and ships prebuilt binaries for Linux x64, macOS x64, and macOS arm64
+   - `walkStack` takes a file path, so the handler writes the uploaded buffer to a temp file under `os.tmpdir()` and cleans it up afterwards
+   - The text output is parsed line-by-line into a structured object (crash reason, address, crashing thread, stack frames, modules, system info)
 
 4. **Configuration**
-   - Environment variables for Honeybadger API key
-   - Optional environment name configuration
-   - Symbol file configuration (if applicable)
+   - `HONEYBADGER_API_KEY` (required) — Honeybadger project API key
+   - `ENVIRONMENT_NAME` (optional, default `production`) — reported as `server.environment_name`
+   - `PORT` (optional, default `3000`)
+   - `.env` is loaded automatically when `NODE_ENV !== 'production'`
 
 5. **Client Integration**
-   - Electron app configuration to point to Lambda endpoint
-   - Additional metadata to include with crash reports
+   - Electron app's `crashReporter.start({ submitURL: 'https://<host>/minidump', ... })`
+   - Extra metadata supplied via `extra` is forwarded as multipart fields and surfaces in `request.context`
 
 ## Technologies
 
-- Node.js Lambda function
-- AWS API Gateway for handling HTTP requests
-- AWS Lambda for serverless execution
-- busboy or formidable for multipart form parsing
-- node-fetch or axios for Honeybadger API requests
-- minidump-tools or custom processing for crash data extraction
+- Node.js (>= 18) Express server
+- `busboy` for multipart/form-data parsing
+- `minidump` (electron/node-minidump) for stackwalking
+- `axios` for Honeybadger API requests
+- `morgan` for request logging
+- Jest + supertest + nock for tests
 
 ## Deployment
 
-- Packaged as AWS Lambda function
-- API Gateway configuration for receiving crash reports
-- IAM roles for necessary permissions
-- Environment variables for configuration
+- Runs as a long-lived Express process (see `Procfile`: `web: node src/index.js`)
+- Heroku is the canonical target, but any Node 18+ host works
+- Required env vars: `HONEYBADGER_API_KEY`, optional: `ENVIRONMENT_NAME`, `PORT`
