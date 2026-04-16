@@ -6,25 +6,32 @@ const os = require('os');
 const path = require('path');
 const { promisify } = require('util');
 const minidump = require('minidump');
+const { getSymbolPath } = require('./symbolService');
 
 // minidump.walkStack(filePath, [symbolPaths,] callback) takes a file path,
 // not a buffer, so callers that have a Buffer must spill it to a temp file.
 const walkStackAsync = promisify(minidump.walkStack);
 
 /**
- * Parses a minidump file to extract crash information
+ * Parses a minidump file to extract crash information.
+ *
+ * When `metadata` contains the Crashpad auto-fields `ver` (Electron version)
+ * and `platform`, symbols are fetched from the official Electron release on
+ * GitHub so that `minidump_stackwalk` can resolve addresses to functions.
  *
  * @param {Buffer} minidumpBuffer - The raw minidump file content
+ * @param {Object} [metadata]     - Multipart form fields from the crash report
  * @returns {Promise<Object>} - Extracted crash information
  */
-async function parseMinidump(minidumpBuffer) {
+async function parseMinidump(minidumpBuffer, metadata) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'honeybadger-brakepad-'));
   const tmpPath = path.join(tmpDir, 'crash.dmp');
 
   try {
     fs.writeFileSync(tmpPath, minidumpBuffer);
 
-    const stackWalkResult = await walkStackAsync(tmpPath, []);
+    const symbolPaths = await resolveSymbolPaths(metadata);
+    const stackWalkResult = await walkStackAsync(tmpPath, symbolPaths);
     const stackInfo = parseStackWalkOutput(stackWalkResult);
 
     return {
@@ -44,6 +51,38 @@ async function parseMinidump(minidumpBuffer) {
     } catch (cleanupErr) {
       console.warn('Failed to clean up minidump temp dir:', cleanupErr.message);
     }
+  }
+}
+
+/**
+ * Resolves symbol paths from crash-report metadata. Returns an empty array
+ * (graceful degradation) when the Electron version or platform is unknown or
+ * the download fails.
+ */
+async function resolveSymbolPaths(metadata) {
+  if (!metadata) return [];
+
+  const electronVersion = (metadata.ver || '').replace(/^v/, '');
+  const platform = metadata.platform;
+
+  if (!electronVersion || !platform) {
+    if (!electronVersion) {
+      console.log('No Electron version (ver) in crash metadata — skipping symbol fetch');
+    }
+    if (!platform) {
+      console.log('No platform in crash metadata — skipping symbol fetch');
+    }
+    return [];
+  }
+
+  const arch = metadata.arch || undefined; // let symbolService apply its default
+
+  try {
+    const symbolDir = await getSymbolPath(electronVersion, platform, arch);
+    return [symbolDir];
+  } catch (err) {
+    console.warn(`Failed to fetch symbols for Electron ${electronVersion}-${platform}: ${err.message}`);
+    return [];
   }
 }
 

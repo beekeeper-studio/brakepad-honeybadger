@@ -65,21 +65,35 @@ This Express server proxies crash reports from Electron apps using Crashpad/Brea
    - `walkStack` takes a file path, so the handler writes the uploaded buffer to a temp file under `os.tmpdir()` and cleans it up afterwards
    - The text output is parsed line-by-line into a structured object (crash reason, address, crashing thread, stack frames, modules, system info)
 
-4. **Configuration**
+4. **Symbol Resolution** (`src/services/symbolService.js`)
+   - When the crash report includes Crashpad auto-fields `ver` (Electron version) and `platform`, the server downloads official Breakpad symbols from the Electron GitHub release for that version
+   - Uses `@electron/get` (handles mirrors, caching, checksums) to fetch the zip and `extract-zip` to unpack it
+   - Symbols are cached on disk at `<SYMBOL_CACHE_DIR>/<version>-<platform>-<arch>/breakpad_symbols/` — only the first crash per combo incurs a download
+   - Graceful degradation: if `ver`/`platform` are absent or the download fails, `minidump_stackwalk` runs without symbols (addresses remain unresolved)
+   - Covers all Electron-shipped binaries (electron, libffmpeg, V8, Chromium, etc.); native Node addons need symbols from your own build pipeline
+
+5. **Configuration**
    - `HONEYBADGER_API_KEY` (required) — Honeybadger project API key
    - `ENVIRONMENT_NAME` (optional, default `production`) — reported as `server.environment_name`
+   - `HONEYBADGER_PROJECT_ROOT` (optional) — Honeybadger path-prefix stripping
+   - `SYMBOL_CACHE_DIR` (optional, default `os.tmpdir()/electron-symbols`) — persistent symbol cache
+   - `DEFAULT_ELECTRON_ARCH` (optional, default `x64`) — fallback CPU arch for symbol downloads
    - `PORT` (optional, default `3000`)
    - `.env` is loaded automatically when `NODE_ENV !== 'production'`
 
-5. **Client Integration**
+6. **Client Integration**
    - Electron app's `crashReporter.start({ submitURL: 'https://<host>/minidump', ... })`
+   - Crashpad auto-sends `ver` (Electron version), `platform`, `process_type`, `prod`, `guid`
    - Extra metadata supplied via `extra` is forwarded as multipart fields and surfaces in `request.context`
+   - Recommended `extra` fields: `version` (your app version), `arch` (= `process.arch`, for symbol resolution)
 
 ## Technologies
 
 - Node.js (>= 18) Express server
 - `busboy` for multipart/form-data parsing
 - `minidump` (electron/node-minidump) for stackwalking
+- `@electron/get` for downloading official Electron symbol artifacts
+- `extract-zip` for unpacking symbol zips
 - `axios` for Honeybadger API requests
 - `morgan` for request logging
 - Jest + supertest + nock for tests
@@ -88,4 +102,6 @@ This Express server proxies crash reports from Electron apps using Crashpad/Brea
 
 - Runs as a long-lived Express process (see `Procfile`: `web: node src/index.js`)
 - Heroku is the canonical target, but any Node 18+ host works
-- Required env vars: `HONEYBADGER_API_KEY`, optional: `ENVIRONMENT_NAME`, `PORT`
+- Required env vars: `HONEYBADGER_API_KEY`
+- Optional: `ENVIRONMENT_NAME`, `PORT`, `SYMBOL_CACHE_DIR`, `DEFAULT_ELECTRON_ARCH`, `HONEYBADGER_PROJECT_ROOT`
+- For Heroku: consider a persistent volume or addon for `SYMBOL_CACHE_DIR` so symbols survive dyno restarts

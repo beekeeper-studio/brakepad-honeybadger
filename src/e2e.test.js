@@ -8,8 +8,11 @@
 const request = require('supertest');
 const nock = require('nock');
 
-// Mock the minidump module BEFORE requiring the app.
-// Real signature: walkStack(filePath, symbolPaths, callback)
+// Mock the symbol service and minidump module BEFORE requiring the app.
+jest.mock('./services/symbolService', () => ({
+  getSymbolPath: jest.fn().mockResolvedValue('/fake/breakpad_symbols'),
+}));
+
 jest.mock('minidump', () => ({
   walkStack: jest.fn((filePath, symbolPaths, callback) => {
     const output =

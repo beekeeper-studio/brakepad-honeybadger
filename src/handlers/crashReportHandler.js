@@ -92,8 +92,13 @@ async function parseCrashReport(req) {
           }
 
           console.log("Processing minidump file");
-          // Extract stack traces and other information from the minidump
-          const minidumpData = await parseMinidump(formData.files.upload_file_minidump.content);
+          // Extract stack traces and other information from the minidump.
+          // Pass form fields so the minidump service can fetch symbols for
+          // the correct Electron version/platform/arch.
+          const minidumpData = await parseMinidump(
+            formData.files.upload_file_minidump.content,
+            formData.fields
+          );
 
           // Create the final crash report object
           const crashReport = {
