@@ -94,7 +94,7 @@ describe('POST /minidump (end-to-end)', () => {
         url: expect.stringContaining('honeybadger-brakepad')
       },
       error: {
-        class: 'ApplicationCrash',
+        class: 'SIGSEGV',
         message: expect.stringContaining('SIGSEGV'),
         fingerprint: 'crash-guid-001'
       },
@@ -107,7 +107,9 @@ describe('POST /minidump (end-to-end)', () => {
         }
       },
       server: {
-        environment_name: 'test'
+        environment_name: 'test',
+        language: 'c++',
+        platform: 'Linux'
       }
     });
 
@@ -119,6 +121,15 @@ describe('POST /minidump (end-to-end)', () => {
       column: 0
     });
     expect(capturedPayload.error.backtrace.length).toBeGreaterThanOrEqual(3);
+
+    // Hostname is populated and modules from the parsed minidump come through.
+    expect(capturedPayload.server.hostname).toBeTruthy();
+    expect(capturedPayload.request.context.modules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'my-app', version: '1.2.3' }),
+        expect.objectContaining({ name: 'libc.so.6', version: '2.31' })
+      ])
+    );
   });
 
   test('returns 500 when HONEYBADGER_API_KEY is missing', async () => {

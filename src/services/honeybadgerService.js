@@ -1,10 +1,45 @@
 /**
  * Service for sending crash reports to Honeybadger
  */
+const os = require('os');
 const axios = require('axios');
 
 // Honeybadger API configuration
 const HONEYBADGER_API_URL = 'https://api.honeybadger.io/v1/notices';
+
+/**
+ * Derives a Honeybadger error class from a Breakpad/Crashpad crash reason so
+ * that distinct signals (SIGSEGV, SIGABRT, EXCEPTION_ACCESS_VIOLATION_*, etc.)
+ * group separately in the Honeybadger UI instead of collapsing into a single
+ * generic bucket.
+ *
+ * Examples:
+ *   "SIGSEGV /SEGV_MAPERR"                      -> "SIGSEGV"
+ *   "EXC_BAD_ACCESS / KERN_INVALID_ADDRESS"     -> "EXC_BAD_ACCESS"
+ *   "EXCEPTION_ACCESS_VIOLATION_READ"           -> "EXCEPTION_ACCESS_VIOLATION_READ"
+ *   null / "Unknown crash"                      -> "ApplicationCrash"
+ */
+function deriveErrorClass(crashReason) {
+  if (!crashReason || crashReason === 'Unknown crash') {
+    return 'ApplicationCrash';
+  }
+  const match = crashReason.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+  return match ? match[0] : 'ApplicationCrash';
+}
+
+/**
+ * Looks up the operating system string in parsed systemInfo, accepting either
+ * the human-readable key ("Operating system") that minidump_stackwalk prints
+ * by default or the short "OS" key used in machine-readable output.
+ */
+function derivePlatform(systemInfo) {
+  return (
+    systemInfo['Operating system'] ||
+    systemInfo.OS ||
+    systemInfo['Operating System'] ||
+    'unknown'
+  );
+}
 
 /**
  * Converts a Breakpad/Crashpad crash report to Honeybadger format
@@ -14,11 +49,12 @@ const HONEYBADGER_API_URL = 'https://api.honeybadger.io/v1/notices';
  */
 function transformToHoneybadgerFormat(crashReport) {
   const environmentName = process.env.ENVIRONMENT_NAME || 'production';
+  const projectRoot = process.env.HONEYBADGER_PROJECT_ROOT || '';
 
   // Extract the crashing thread's stack trace
   const threadId = crashReport.crash.threadCrashed;
   const stackTrace = (threadId != null && crashReport.crash.stackTraces[threadId]) || [];
-  
+
   // Convert the stack trace to Honeybadger's backtrace format
   const backtrace = stackTrace.map(frame => ({
     file: frame.file || `<unknown>:${frame.address}`,
@@ -30,10 +66,10 @@ function transformToHoneybadgerFormat(crashReport) {
   // Get product name and version from metadata
   const productName = crashReport.metadata.product || 'Unknown Product';
   const productVersion = crashReport.metadata.version || 'Unknown Version';
-  
+
   // Generate a descriptive error message
   const errorMessage = `${crashReport.crash.crashReason || 'Application crashed'} at ${crashReport.crash.crashAddress || 'unknown address'}`;
-  
+
   // Build the Honeybadger payload
   return {
     notifier: {
@@ -42,7 +78,7 @@ function transformToHoneybadgerFormat(crashReport) {
       version: '1.0.0'
     },
     error: {
-      class: 'ApplicationCrash',
+      class: deriveErrorClass(crashReport.crash.crashReason),
       message: errorMessage,
       backtrace: backtrace,
       fingerprint: crashReport.metadata.guid || null,
@@ -51,7 +87,8 @@ function transformToHoneybadgerFormat(crashReport) {
       context: {
         product: productName,
         version: productVersion,
-        ...crashReport.metadata
+        ...crashReport.metadata,
+        modules: crashReport.crash.modules || []
       },
       cgi_data: {
         'Content-Type': 'multipart/form-data'
@@ -59,12 +96,12 @@ function transformToHoneybadgerFormat(crashReport) {
       params: {}
     },
     server: {
-      project_root: '',
+      project_root: projectRoot,
       environment_name: environmentName,
-      hostname: '',
+      hostname: os.hostname(),
       time: new Date().toISOString(),
-      platform: crashReport.crash.systemInfo.OS || 'unknown',
-      language: 'javascript'
+      platform: derivePlatform(crashReport.crash.systemInfo || {}),
+      language: 'c++'
     }
   };
 }

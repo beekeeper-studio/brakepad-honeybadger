@@ -90,7 +90,7 @@ describe('honeybadgerService', () => {
         expect.objectContaining({
           notifier: expect.any(Object),
           error: expect.objectContaining({
-            class: 'ApplicationCrash',
+            class: 'SIGSEGV',
             message: expect.stringContaining('SIGSEGV'),
             backtrace: expect.arrayContaining([
               expect.objectContaining({
@@ -187,6 +187,85 @@ describe('honeybadgerService', () => {
       };
       const payload = transformToHoneybadgerFormat(report);
       expect(payload.error.backtrace).toEqual([]);
+    });
+
+    describe('error.class derivation', () => {
+      const cases = [
+        ['SIGSEGV', 'SIGSEGV'],
+        ['SIGSEGV /SEGV_MAPERR', 'SIGSEGV'],
+        ['EXC_BAD_ACCESS / KERN_INVALID_ADDRESS', 'EXC_BAD_ACCESS'],
+        ['EXCEPTION_ACCESS_VIOLATION_READ', 'EXCEPTION_ACCESS_VIOLATION_READ'],
+        ['Unknown crash', 'ApplicationCrash'],
+        [null, 'ApplicationCrash'],
+        ['', 'ApplicationCrash']
+      ];
+
+      it.each(cases)('maps "%s" to "%s"', (reason, expected) => {
+        const report = {
+          ...sampleCrashReport,
+          crash: { ...sampleCrashReport.crash, crashReason: reason }
+        };
+        expect(transformToHoneybadgerFormat(report).error.class).toBe(expected);
+      });
+    });
+
+    it('reads platform from "Operating system" key (human-readable stackwalk output)', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: {
+          ...sampleCrashReport.crash,
+          systemInfo: { 'Operating system': 'macOS 14.4 (23E214)' }
+        }
+      };
+      expect(transformToHoneybadgerFormat(report).server.platform).toBe('macOS 14.4 (23E214)');
+    });
+
+    it('falls back to "OS" key when "Operating system" is absent', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, systemInfo: { OS: 'Windows' } }
+      };
+      expect(transformToHoneybadgerFormat(report).server.platform).toBe('Windows');
+    });
+
+    it('reports "unknown" when systemInfo has no OS information', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, systemInfo: {} }
+      };
+      expect(transformToHoneybadgerFormat(report).server.platform).toBe('unknown');
+    });
+
+    it('sets language to c++ (these are native crashes)', () => {
+      expect(transformToHoneybadgerFormat(sampleCrashReport).server.language).toBe('c++');
+    });
+
+    it('populates hostname from os.hostname()', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.server.hostname).toBe(require('os').hostname());
+      expect(payload.server.hostname).not.toBe('');
+    });
+
+    it('reads project_root from HONEYBADGER_PROJECT_ROOT', () => {
+      process.env.HONEYBADGER_PROJECT_ROOT = '/opt/myapp';
+      expect(transformToHoneybadgerFormat(sampleCrashReport).server.project_root).toBe('/opt/myapp');
+    });
+
+    it('defaults project_root to empty string when env var is unset', () => {
+      delete process.env.HONEYBADGER_PROJECT_ROOT;
+      expect(transformToHoneybadgerFormat(sampleCrashReport).server.project_root).toBe('');
+    });
+
+    it('includes loaded modules in request.context.modules', () => {
+      const modules = [
+        { index: '0', name: 'my-app', version: '1.2.3', debugId: 'DEBUGID0001' },
+        { index: '1', name: 'libc.so.6', version: '2.31', debugId: 'DEBUGID0002' }
+      ];
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, modules }
+      };
+      expect(transformToHoneybadgerFormat(report).request.context.modules).toEqual(modules);
     });
   });
 });
