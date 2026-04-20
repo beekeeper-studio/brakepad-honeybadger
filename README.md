@@ -70,24 +70,84 @@ npm run dev
 
 ## Electron Client Configuration
 
-Configure your Electron app to send crash reports to your server:
+Configure your Electron app to send crash reports to this server. Crashpad
+automatically includes `ver` (Electron version), `platform`, `process_type`,
+and `guid` — the server uses `ver` and `platform` to download official Electron
+symbols and resolve native stack frames.
+
+### Early initialization (captures crashes before app.ready)
+
+Call `crashReporter.start()` at the **very top of your main process entry
+point**, before `app.whenReady()`. This ensures crashes during startup are
+captured and uploaded on the next launch via Crashpad's persistent database.
 
 ```javascript
-const { crashReporter } = require('electron');
+// main.js — first lines
+const { app, crashReporter } = require('electron');
 
-// In your main process
 crashReporter.start({
   productName: 'YourAppName',
   companyName: 'YourCompany',
   submitURL: 'https://your-heroku-app.herokuapp.com/minidump',
   uploadToServer: true,
-  // Add any additional fields you want to include
   extra: {
-    version: app.getVersion(),
-    extra_parameter: 'value'
+    // Your app version (distinct from Electron's auto-sent `ver`)
+    version: require('./package.json').version,
+    // CPU arch — used by the server to fetch the correct symbol bundle
+    arch: process.arch,
   }
 });
+
+// ... rest of app setup
+app.whenReady().then(() => { /* ... */ });
 ```
+
+### Post-ready initialization (has access to full app APIs)
+
+If you need APIs that are only available after `app.ready` (e.g., runtime
+values, user settings), you can start or update the crash reporter later.
+Note: crashes that occur *before* this point won't have the extra metadata.
+
+```javascript
+const { app, crashReporter } = require('electron');
+
+app.whenReady().then(() => {
+  crashReporter.start({
+    productName: 'YourAppName',
+    companyName: 'YourCompany',
+    submitURL: 'https://your-heroku-app.herokuapp.com/minidump',
+    uploadToServer: true,
+    extra: {
+      version: app.getVersion(),
+      arch: process.arch,
+      // Any additional context you want in Honeybadger's request.context:
+      environment: process.env.NODE_ENV || 'production',
+      userId: getCurrentUserId(),
+    }
+  });
+});
+```
+
+### Renderer process crashes
+
+Renderer processes inherit the crash reporter config from the main process
+automatically (Electron 9+). No additional setup is needed — renderer crashes
+are uploaded with the same `submitURL` and `extra` fields.
+
+### What gets sent automatically by Crashpad
+
+| Field          | Example         | Notes                                    |
+|----------------|-----------------|------------------------------------------|
+| `ver`          | `28.1.0`        | Electron version (used for symbols)      |
+| `platform`     | `linux`         | OS platform (used for symbols)           |
+| `process_type` | `browser`       | Which process crashed                    |
+| `prod`         | `Electron`      | Product identifier                       |
+| `guid`         | UUID            | Unique client ID (used as fingerprint)   |
+| `_companyName` | `YourCompany`   | From config                              |
+| `_productName` | `YourAppName`   | From config                              |
+
+These arrive as multipart form fields alongside your `extra` values and the
+`upload_file_minidump` binary.
 
 ## API
 
