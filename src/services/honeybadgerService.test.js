@@ -1,7 +1,7 @@
 /**
  * Tests for the honeybadgerService
  */
-const { sendToHoneybadger } = require('./honeybadgerService');
+const { sendToHoneybadger, transformToHoneybadgerFormat } = require('./honeybadgerService');
 const axios = require('axios');
 
 // Mock axios
@@ -90,7 +90,7 @@ describe('honeybadgerService', () => {
         expect.objectContaining({
           notifier: expect.any(Object),
           error: expect.objectContaining({
-            class: 'ApplicationCrash',
+            class: 'SIGSEGV',
             message: expect.stringContaining('SIGSEGV'),
             backtrace: expect.arrayContaining([
               expect.objectContaining({
@@ -138,6 +138,134 @@ describe('honeybadgerService', () => {
       await expect(sendToHoneybadger(sampleCrashReport)).rejects.toThrow(
         'Failed to send report to Honeybadger: Request failed'
       );
+    });
+  });
+
+  describe('transformToHoneybadgerFormat', () => {
+    it('maps stack frames to Honeybadger backtrace entries', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+
+      expect(payload.error.backtrace).toEqual([
+        { file: 'app.js', method: 'main', number: 42, column: 0 },
+        { file: 'app.js', method: 'start', number: 30, column: 0 }
+      ]);
+    });
+
+    it('uses guid as fingerprint', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.error.fingerprint).toBe('12345-67890');
+    });
+
+    it('forwards metadata into request.context', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.request.context).toEqual(
+        expect.objectContaining({
+          product: 'TestApp',
+          version: '1.0.0',
+          guid: '12345-67890',
+          custom_key: 'custom_value'
+        })
+      );
+    });
+
+    it('respects ENVIRONMENT_NAME at call time', () => {
+      process.env.ENVIRONMENT_NAME = 'staging';
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.server.environment_name).toBe('staging');
+    });
+
+    it('defaults to production when ENVIRONMENT_NAME is unset', () => {
+      delete process.env.ENVIRONMENT_NAME;
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.server.environment_name).toBe('production');
+    });
+
+    it('produces an empty backtrace when no thread crashed', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, threadCrashed: null }
+      };
+      const payload = transformToHoneybadgerFormat(report);
+      expect(payload.error.backtrace).toEqual([]);
+    });
+
+    describe('error.class derivation', () => {
+      const cases = [
+        ['SIGSEGV', 'SIGSEGV'],
+        ['SIGSEGV /SEGV_MAPERR', 'SIGSEGV'],
+        ['EXC_BAD_ACCESS / KERN_INVALID_ADDRESS', 'EXC_BAD_ACCESS'],
+        ['EXCEPTION_ACCESS_VIOLATION_READ', 'EXCEPTION_ACCESS_VIOLATION_READ'],
+        ['Unknown crash', 'ApplicationCrash'],
+        [null, 'ApplicationCrash'],
+        ['', 'ApplicationCrash']
+      ];
+
+      it.each(cases)('maps "%s" to "%s"', (reason, expected) => {
+        const report = {
+          ...sampleCrashReport,
+          crash: { ...sampleCrashReport.crash, crashReason: reason }
+        };
+        expect(transformToHoneybadgerFormat(report).error.class).toBe(expected);
+      });
+    });
+
+    it('reads platform from "Operating system" key (human-readable stackwalk output)', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: {
+          ...sampleCrashReport.crash,
+          systemInfo: { 'Operating system': 'macOS 14.4 (23E214)' }
+        }
+      };
+      expect(transformToHoneybadgerFormat(report).server.platform).toBe('macOS 14.4 (23E214)');
+    });
+
+    it('falls back to "OS" key when "Operating system" is absent', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, systemInfo: { OS: 'Windows' } }
+      };
+      expect(transformToHoneybadgerFormat(report).server.platform).toBe('Windows');
+    });
+
+    it('reports "unknown" when systemInfo has no OS information', () => {
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, systemInfo: {} }
+      };
+      expect(transformToHoneybadgerFormat(report).server.platform).toBe('unknown');
+    });
+
+    it('sets language to c++ (these are native crashes)', () => {
+      expect(transformToHoneybadgerFormat(sampleCrashReport).server.language).toBe('c++');
+    });
+
+    it('populates hostname from os.hostname()', () => {
+      const payload = transformToHoneybadgerFormat(sampleCrashReport);
+      expect(payload.server.hostname).toBe(require('os').hostname());
+      expect(payload.server.hostname).not.toBe('');
+    });
+
+    it('reads project_root from HONEYBADGER_PROJECT_ROOT', () => {
+      process.env.HONEYBADGER_PROJECT_ROOT = '/opt/myapp';
+      expect(transformToHoneybadgerFormat(sampleCrashReport).server.project_root).toBe('/opt/myapp');
+    });
+
+    it('defaults project_root to empty string when env var is unset', () => {
+      delete process.env.HONEYBADGER_PROJECT_ROOT;
+      expect(transformToHoneybadgerFormat(sampleCrashReport).server.project_root).toBe('');
+    });
+
+    it('includes loaded modules in request.context.modules', () => {
+      const modules = [
+        { index: '0', name: 'my-app', version: '1.2.3', debugId: 'DEBUGID0001' },
+        { index: '1', name: 'libc.so.6', version: '2.31', debugId: 'DEBUGID0002' }
+      ];
+      const report = {
+        ...sampleCrashReport,
+        crash: { ...sampleCrashReport.crash, modules }
+      };
+      expect(transformToHoneybadgerFormat(report).request.context.modules).toEqual(modules);
     });
   });
 });
